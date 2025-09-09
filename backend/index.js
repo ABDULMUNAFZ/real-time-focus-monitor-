@@ -1,76 +1,74 @@
 const express = require("express");
 const http = require("http");
 const cors = require("cors");
-
 const app = express();
 const server = http.createServer(app);
-
-const { Server } = require("socket.io");
-
-// Allow your Vercel frontend
-app.use(cors({
-  origin: "https://real-time-focus-monitor.vercel.app",
-  methods: ["GET", "POST"],
-  credentials: true
-}));
-
-const io = new Server(server, {
+const socket = require("socket.io");
+const io = require("socket.io")(server, {
   cors: {
-    origin: "https://real-time-focus-monitor.vercel.app",
-    methods: ["GET", "POST"],
-    credentials: true
+    origin: process.env.ORIGIN || "*",
   },
-  transports: ["websocket", "polling"]
 });
 
+const users = {};
+
+const PORT = process.env.PORT || 5000;
+
+const socketToRoom = {};
+
 io.on("connection", (socket) => {
-  console.log("✅ User connected:", socket.id);
-
-  // When user joins a room
   socket.on("join room", ({ roomID, user }) => {
-    socket.join(roomID);
+    if (users[roomID]) {
+      users[roomID].push({ userId: socket.id, user });
+    } else {
+      users[roomID] = [{ userId: socket.id, user }];
+    }
+    socketToRoom[socket.id] = roomID;
+    const usersInThisRoom = users[roomID].filter(
+      (user) => user.userId !== socket.id
+    );
 
-    // Get all existing users in the room except this one
-    const usersInRoom = Array.from(io.sockets.adapter.rooms.get(roomID) || [])
-      .filter(id => id !== socket.id)
-      .map(id => ({ userId: id }));
-
-    // Send list of users to the new user
-    socket.emit("all users", usersInRoom);
-
-    // Notify others that a new user joined
-    socket.to(roomID).emit("user joined", { callerID: socket.id, user });
+    // console.log(users);
+    socket.emit("all users", usersInThisRoom);
   });
 
-  // When a user sends a WebRTC offer (signal) to another user
+  // signal for offer
   socket.on("sending signal", (payload) => {
-    io.to(payload.userToSignal).emit("receiving signal", {
+    // console.log(payload);
+    io.to(payload.userToSignal).emit("user joined", {
       signal: payload.signal,
-      callerID: payload.callerID
+      callerID: payload.callerID,
+      user: payload.user,
     });
   });
 
-  // When the target user responds with an answer (returning signal)
+  // signal for answer
   socket.on("returning signal", (payload) => {
     io.to(payload.callerID).emit("receiving returned signal", {
       signal: payload.signal,
-      id: socket.id
+      id: socket.id,
     });
   });
 
-  // Chat messages inside the room
-  socket.on("send message", ({ roomID, message }) => {
-    socket.to(roomID).emit("message", message);
+  // send message
+  socket.on("send message", (payload) => {
+    io.emit("message", payload);
   });
 
-  // Handle disconnect
+  // disconnect
   socket.on("disconnect", () => {
-    socket.rooms.forEach(roomID => {
-      socket.to(roomID).emit("user left", socket.id);
-    });
-    console.log("❌ User disconnected:", socket.id);
+    const roomID = socketToRoom[socket.id];
+    let room = users[roomID];
+    if (room) {
+      room = room.filter((item) => item.userId !== socket.id);
+      users[roomID] = room;
+    }
+    socket.broadcast.emit("user left", socket.id);
   });
 });
 
-const PORT = process.env.PORT || 5000;
-server.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+console.clear();
+
+server.listen(PORT, () =>
+  console.log(`Server is running on port http://localhost:${PORT}`)
+);
