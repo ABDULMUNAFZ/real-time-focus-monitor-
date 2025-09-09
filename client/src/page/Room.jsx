@@ -1,11 +1,33 @@
-useEffect(() => {
-  const unsub = () => {
-    socket.current = io.connect(
-      "https://real-time-focus-monitor.onrender.com"
-      // process.env.SOCKET_BACKEND_URL || "http://localhost:5000"
-    );
+import React, { useEffect, useRef, useState } from "react";
+import { useParams } from "react-router-dom";
+import io from "socket.io-client";
+import Peer from "simple-peer";
 
-    // 📩 Handle chat messages
+// 🔊 Sound effects
+import joinSound from "../assets/join.mp3";
+import leaveSFX from "../assets/leave.mp3";
+import msgSFX from "../assets/msg.mp3";
+
+const Room = ({ user }) => {
+  const { roomID } = useParams();
+
+  const [loading, setLoading] = useState(true);
+  const [localStream, setLocalStream] = useState(null);
+  const [peers, setPeers] = useState([]);
+  const [msgs, setMsgs] = useState([]);
+
+  const socket = useRef();
+  const peersRef = useRef([]);
+  const localVideo = useRef();
+
+  // Connect to backend
+  useEffect(() => {
+    socket.current = io("https://sonic-meet-backend.onrender.com", {
+      transports: ["websocket", "polling"],
+      withCredentials: true,
+    });
+
+    // 📩 Chat messages
     socket.current.on("message", (data) => {
       const audio = new Audio(msgSFX);
       if (user?.uid !== data.user.id) {
@@ -18,18 +40,15 @@ useEffect(() => {
       setMsgs((msgs) => [...msgs, msg]);
     });
 
-    if (user)
+    if (user) {
       navigator.mediaDevices
-        .getUserMedia({
-          video: true,
-          audio: true,
-        })
+        .getUserMedia({ video: true, audio: true })
         .then((stream) => {
           setLoading(false);
           setLocalStream(stream);
           localVideo.current.srcObject = stream;
 
-          // 🔗 Join room
+          // Join the room
           socket.current.emit("join room", {
             roomID,
             user: {
@@ -40,7 +59,7 @@ useEffect(() => {
             },
           });
 
-          // 🟢 Existing users in the room
+          // Existing users in the room
           socket.current.on("all users", (users) => {
             const peers = [];
             users.forEach((u) => {
@@ -59,7 +78,7 @@ useEffect(() => {
             setPeers(peers);
           });
 
-          // 🟢 A new user joined
+          // New user joined
           socket.current.on("user joined", (payload) => {
             const peer = addPeer(payload.signal, payload.callerID, stream);
             peersRef.current.push({
@@ -74,7 +93,7 @@ useEffect(() => {
             ]);
           });
 
-          // 🟢 Receiving WebRTC offer
+          // Receiving offer
           socket.current.on("receiving signal", (payload) => {
             const peer = addPeer(payload.signal, payload.callerID, stream);
             peersRef.current.push({
@@ -89,15 +108,21 @@ useEffect(() => {
             ]);
           });
 
-          // 🟢 Receiving WebRTC answer
+          // Receiving answer
           socket.current.on("receiving returned signal", (payload) => {
-            const item = peersRef.current.find(
-              (p) => p.peerID === payload.id
-            );
-            if (item) item.peer.signal(payload.signal);
+            const item = peersRef.current.find((p) => p.peerID === payload.id);
+            if (item && item.peer) {
+              try {
+                item.peer.signal(payload.signal);
+              } catch (err) {
+                console.error("⚠️ Failed to apply signal:", err);
+              }
+            } else {
+              console.warn("⚠️ No peer found for returned signal", payload.id);
+            }
           });
 
-          // ❌ Someone left
+          // User left
           socket.current.on("user left", (id) => {
             const audio = new Audio(leaveSFX);
             audio.play();
@@ -107,47 +132,99 @@ useEffect(() => {
             setPeers((users) => users.filter((p) => p.peerID !== id));
           });
         });
-  };
-  return unsub();
-}, [user, roomID]);
+    }
 
-// --- Peer Helpers ---
-const createPeer = (userToSignal, callerID, stream) => {
-  const peer = new Peer({
-    initiator: true,
-    trickle: false,
-    stream,
-  });
+    return () => {
+      if (socket.current) socket.current.disconnect();
+      if (localStream) {
+        localStream.getTracks().forEach((track) => track.stop());
+      }
+    };
+  }, [user, roomID]);
 
-  peer.on("signal", (signal) => {
-    socket.current.emit("sending signal", {
-      userToSignal,
-      callerID,
-      signal,
-      user: {
-        uid: user?.uid,
-        email: user?.email,
-        name: user?.displayName,
-        photoURL: user?.photoURL,
-      },
+  // --- Peer Helpers ---
+  const createPeer = (userToSignal, callerID, stream) => {
+    const peer = new Peer({
+      initiator: true,
+      trickle: false,
+      stream,
     });
-  });
 
-  return peer;
+    peer.on("signal", (signal) => {
+      socket.current.emit("sending signal", {
+        userToSignal,
+        callerID,
+        signal,
+        user: {
+          uid: user?.uid,
+          email: user?.email,
+          name: user?.displayName,
+          photoURL: user?.photoURL,
+        },
+      });
+    });
+
+    return peer;
+  };
+
+  const addPeer = (incomingSignal, callerID, stream) => {
+    const peer = new Peer({
+      initiator: false,
+      trickle: false,
+      stream,
+    });
+
+    peer.on("signal", (signal) => {
+      socket.current.emit("returning signal", { signal, callerID });
+    });
+
+    joinSound.play();
+
+    try {
+      peer.signal(incomingSignal);
+    } catch (err) {
+      console.error("⚠️ Failed to process incoming signal:", err);
+    }
+
+    return peer;
+  };
+
+  return (
+    <div>
+      {loading ? (
+        <p>Loading room...</p>
+      ) : (
+        <div>
+          <video ref={localVideo} autoPlay playsInline muted />
+          {peers.map((peerObj) => (
+            <Video key={peerObj.peerID} peer={peerObj.peer} />
+          ))}
+        </div>
+      )}
+
+      {/* Chat messages */}
+      <div>
+        {msgs.map((msg, i) => (
+          <p key={i}>
+            <b>{msg.user?.name || "Anon"}:</b> {msg.text}
+          </p>
+        ))}
+      </div>
+    </div>
+  );
 };
 
-const addPeer = (incomingSignal, callerID, stream) => {
-  const peer = new Peer({
-    initiator: false,
-    trickle: false,
-    stream,
-  });
+// Component to render remote video
+const Video = ({ peer }) => {
+  const ref = useRef();
 
-  peer.on("signal", (signal) => {
-    socket.current.emit("returning signal", { signal, callerID });
-  });
+  useEffect(() => {
+    peer.on("stream", (stream) => {
+      ref.current.srcObject = stream;
+    });
+  }, [peer]);
 
-  joinSound.play();
-  peer.signal(incomingSignal);
-  return peer;
+  return <video ref={ref} autoPlay playsInline />;
 };
+
+export default Room;
