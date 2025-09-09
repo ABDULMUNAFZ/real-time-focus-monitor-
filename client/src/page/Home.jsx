@@ -93,7 +93,7 @@ const Home = () => {
                 rel="noreferrer"
               >
                 {" "}
-                Sahil Verma
+                Tech Mavericks
               </a>
             </div>
           </div>
