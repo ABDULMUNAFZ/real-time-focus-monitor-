@@ -1,22 +1,29 @@
 const express = require("express");
 const http = require("http");
 const cors = require("cors");
+
 const app = express();
 const server = http.createServer(app);
-const socket = require("socket.io");
-const io = require("socket.io")(server, {
+
+const { Server } = require("socket.io");
+
+const io = new Server(server, {
   cors: {
-    origin: process.env.ORIGIN || "*",
+    origin: process.env.ORIGIN || "https://your-frontend.vercel.app", // replace with your Vercel URL
+    methods: ["GET", "POST"],
   },
 });
 
 const users = {};
+const socketToRoom = {};
 
 const PORT = process.env.PORT || 5000;
 
-const socketToRoom = {};
-
+// Socket.IO connection
 io.on("connection", (socket) => {
+  console.log(`User connected: ${socket.id}`);
+
+  // Join room
   socket.on("join room", ({ roomID, user }) => {
     if (users[roomID]) {
       users[roomID].push({ userId: socket.id, user });
@@ -24,17 +31,16 @@ io.on("connection", (socket) => {
       users[roomID] = [{ userId: socket.id, user }];
     }
     socketToRoom[socket.id] = roomID;
+
     const usersInThisRoom = users[roomID].filter(
-      (user) => user.userId !== socket.id
+      (u) => u.userId !== socket.id
     );
 
-    // console.log(users);
     socket.emit("all users", usersInThisRoom);
   });
 
-  // signal for offer
+  // Sending signal (WebRTC offer)
   socket.on("sending signal", (payload) => {
-    // console.log(payload);
     io.to(payload.userToSignal).emit("user joined", {
       signal: payload.signal,
       callerID: payload.callerID,
@@ -42,7 +48,7 @@ io.on("connection", (socket) => {
     });
   });
 
-  // signal for answer
+  // Returning signal (WebRTC answer)
   socket.on("returning signal", (payload) => {
     io.to(payload.callerID).emit("receiving returned signal", {
       signal: payload.signal,
@@ -50,25 +56,25 @@ io.on("connection", (socket) => {
     });
   });
 
-  // send message
+  // Chat message
   socket.on("send message", (payload) => {
     io.emit("message", payload);
   });
 
-  // disconnect
+  // Disconnect
   socket.on("disconnect", () => {
     const roomID = socketToRoom[socket.id];
-    let room = users[roomID];
-    if (room) {
-      room = room.filter((item) => item.userId !== socket.id);
-      users[roomID] = room;
+    if (roomID && users[roomID]) {
+      users[roomID] = users[roomID].filter(
+        (u) => u.userId !== socket.id
+      );
     }
     socket.broadcast.emit("user left", socket.id);
+    console.log(`User disconnected: ${socket.id}`);
   });
 });
 
-console.clear();
-
-server.listen(PORT, () =>
-  console.log(`Server is running on port http://localhost:${PORT}`)
-);
+// Start server
+server.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});
