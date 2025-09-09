@@ -85,7 +85,7 @@ const Room = () => {
   useEffect(() => {
     const unsub = () => {
       socket.current = io.connect(
-        "https://sonic-meet-backend.herokuapp.com/"
+        "https://real-time-focus-monitor.onrender.com"
         // process.env.SOCKET_BACKEND_URL || "http://localhost:5000"
       );
       socket.current.on("message", (data) => {
